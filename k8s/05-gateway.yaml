@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: restaurante
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+        - name: gateway
+          image: apirestaurante/gateway:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: URL_AUTH
+              value: http://servicio-autenticacion:8000
+            - name: URL_CLIENTES_PRODUCTOS
+              value: http://servicio-clientes-productos:8000
+            - name: URL_PAGOS_DOMICILIOS
+              value: http://servicio-pagos-domicilios:8000
+            - name: URL_PEDIDOS
+              value: http://servicio-pedidos:8000
+            - name: URL_INVENTARIO
+              value: http://servicio-inventario:8000
+          readinessProbe:
+            httpGet: {path: /, port: 8000}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 300m, memory: 192Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: restaurante
+spec:
+  type: NodePort
+  selector:
+    app: gateway
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30000

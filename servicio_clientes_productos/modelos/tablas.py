@@ -1,0 +1,24 @@
+
+from sqlalchemy import Column, Integer, String, Float, Boolean
+from base_datos import Base
+
+
+class ProductoTabla(Base):
+    __tablename__ = "productos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String(100), nullable=False)
+    precio = Column(Float, nullable=False)
+    categoria = Column(String(50), nullable=False)
+    descripcion = Column(String(255), nullable=True)
+    disponible = Column(Boolean, default=True, nullable=False)
+
+
+class ClienteTabla(Base):
+    __tablename__ = "clientes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String(100), nullable=False)
+    email = Column(String(120), unique=True, nullable=False)
+    telefono = Column(String(30))
+    direccion = Column(String(255))

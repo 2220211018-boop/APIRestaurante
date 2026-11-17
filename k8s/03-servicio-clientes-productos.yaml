@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: servicio-clientes-productos
+  namespace: restaurante
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: servicio-clientes-productos
+  template:
+    metadata:
+      labels:
+        app: servicio-clientes-productos
+    spec:
+      initContainers:
+        - name: esperar-postgres
+          image: postgres:15
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432; do echo esperando a postgres; sleep 2; done"]
+      containers:
+        - name: servicio-clientes-productos
+          image: apirestaurante/clientes-productos:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: {name: postgres-secret, key: POSTGRES_USER}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: postgres-secret, key: POSTGRES_PASSWORD}
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: {name: postgres-secret, key: POSTGRES_DB}
+            - name: DATABASE_URL
+              value: "postgresql+psycopg2://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)"
+            - name: PUBLIC_KEY_PATH
+              value: /keys-publica/public_key.pem
+          readinessProbe:
+            httpGet: {path: /, port: 8000}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            - name: llave-publica
+              mountPath: /keys-publica
+              readOnly: true
+      volumes:
+        - name: llave-publica
+          secret:
+            secretName: rsa-public-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: servicio-clientes-productos
+  namespace: restaurante
+spec:
+  selector:
+    app: servicio-clientes-productos
+  ports:
+    - port: 8000
+      targetPort: 8000

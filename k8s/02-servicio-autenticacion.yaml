@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: servicio-autenticacion
+  namespace: restaurante
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: servicio-autenticacion
+  template:
+    metadata:
+      labels:
+        app: servicio-autenticacion
+    spec:
+      containers:
+        - name: servicio-autenticacion
+          image: apirestaurante/autenticacion:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: PRIVATE_KEY_PATH
+              value: /keys-privada/private_key.pem
+            - name: PUBLIC_KEY_PATH
+              value: /keys-publica/public_key.pem
+            - name: ADMIN_EMAIL
+              value: admin@restaurante.com
+          readinessProbe:
+            tcpSocket: {port: 8000}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            - name: llave-privada
+              mountPath: /keys-privada
+              readOnly: true
+            - name: llave-publica
+              mountPath: /keys-publica
+              readOnly: true
+      volumes:
+        - name: llave-privada
+          secret:
+            secretName: rsa-private-key
+        - name: llave-publica
+          secret:
+            secretName: rsa-public-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: servicio-autenticacion
+  namespace: restaurante
+spec:
+  selector:
+    app: servicio-autenticacion
+  ports:
+    - port: 8000
+      targetPort: 8000
