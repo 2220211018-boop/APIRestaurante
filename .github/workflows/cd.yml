@@ -1,0 +1,146 @@
+# CD: despliega en Kubernetes con un runner Windows PROPIO (self-hosted).
+# Criterio 2 de la rubrica del Proyecto 04.
+# Se ejecuta solo cuando el workflow "CI" termina bien en main (las imagenes ya estan en GHCR).
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag de las imagenes a desplegar (vacio = ultimo commit)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-kubernetes
+  cancel-in-progress: false
+
+jobs:
+  desplegar:
+    name: Desplegar en Kubernetes (runner Windows)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: powershell
+    env:
+      NAMESPACE: restaurante
+      OWNER: ${{ github.repository_owner }}
+      GHCR_USER: ${{ vars.GHCR_USER || github.repository_owner }}
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      TAG_MANUAL: ${{ inputs.tag }}
+      RSA_PRIVATE_KEY: ${{ secrets.RSA_PRIVATE_KEY }}
+      GHCR_PAT: ${{ secrets.GHCR_PAT }}
+      SMOKE_URL: ${{ vars.SMOKE_URL || 'http://localhost:30000/' }}
+
+    steps:
+      - name: Descargar el codigo del commit que paso el CI
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Verificar kubectl y el cluster
+        run: |
+          .\scripts\cd\ayudas.ps1
+          k version --client
+          k config current-context
+          k get nodes
+
+      - name: Namespace y secretos de las llaves RSA
+        run: |
+          .\scripts\cd\ayudas.ps1
+          k apply -f k8s/00-namespace.yaml
+          # Llave publica: esta en el repositorio (no es secreta).
+          k delete secret rsa-public-key -n $env:NAMESPACE --ignore-not-found
+          k create secret generic rsa-public-key "--from-file=public_key.pem=public_key.pem" -n $env:NAMESPACE
+
+          # Llave privada: viene del secreto de GitHub RSA_PRIVATE_KEY (nunca va al repositorio).
+          if ($env:RSA_PRIVATE_KEY) {
+            $tmp = Join-Path $env:RUNNER_TEMP "llaves"
+            New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+            $archivo = Join-Path $tmp "private_key.pem"
+            Escribir-Archivo $archivo ($env:RSA_PRIVATE_KEY.Trim() + "`n")
+            k delete secret rsa-private-key -n $env:NAMESPACE --ignore-not-found
+            k create secret generic rsa-private-key "--from-file=private_key.pem=$archivo" -n $env:NAMESPACE
+            Remove-Item -Recurse -Force $tmp
+          } else {
+            $existe = kubectl get secret rsa-private-key -n $env:NAMESPACE -o name --ignore-not-found
+            if (-not $existe) {
+              throw "Falta el secreto de GitHub RSA_PRIVATE_KEY y el cluster tampoco tiene rsa-private-key."
+            }
+            Write-Host "Sin RSA_PRIVATE_KEY en GitHub: se reutiliza el secreto que ya existe en el cluster."
+          }
+
+      - name: Acceso a GHCR desde el cluster (opcional)
+        run: |
+          .\scripts\cd\ayudas.ps1
+          if ($env:GHCR_PAT) {
+            k delete secret ghcr-pull -n $env:NAMESPACE --ignore-not-found
+            k create secret docker-registry ghcr-pull "--docker-server=ghcr.io" "--docker-username=$env:GHCR_USER" "--docker-password=$env:GHCR_PAT" -n $env:NAMESPACE
+            $parche = Join-Path $env:RUNNER_TEMP "sa-parche.json"
+            Escribir-Archivo $parche '{"imagePullSecrets": [{"name": "ghcr-pull"}]}'
+            k patch serviceaccount default -n $env:NAMESPACE --type merge "--patch-file=$parche"
+            Write-Host "Credenciales de GHCR configuradas."
+          } else {
+            Write-Host "Sin GHCR_PAT: las imagenes de GHCR deben estar en visibilidad Public."
+          }
+
+      - name: Aplicar manifiestos con las imagenes publicadas en GHCR
+        run: |
+          .\scripts\cd\ayudas.ps1
+          $registro = "ghcr.io/" + $env:OWNER.ToLower()
+          $tag = if ($env:TAG_MANUAL) { $env:TAG_MANUAL } else { $env:SHA }
+          Write-Host "Imagenes: $registro/apirestaurante-*:$tag"
+
+          # Los manifiestos usan apirestaurante/<servicio>:1.0 (para desplegar en local).
+          # Aqui se reemplaza por la imagen que construyo el CI en GHCR.
+          $destino = Join-Path $env:RUNNER_TEMP "k8s-render"
+          if (Test-Path $destino) { Remove-Item -Recurse -Force $destino }
+          New-Item -ItemType Directory -Path $destino | Out-Null
+
+          Get-ChildItem k8s -Filter *.yaml | ForEach-Object {
+            $texto = [System.IO.File]::ReadAllText($_.FullName)
+            $texto = [regex]::Replace($texto, 'apirestaurante/([a-z-]+):1.0', "$registro/apirestaurante-`$1:$tag")
+            Escribir-Archivo (Join-Path $destino $_.Name) $texto
+          }
+
+          Select-String -Path "$destino\*.yaml" -Pattern "image: ghcr" | ForEach-Object { $_.Line.Trim() }
+          k apply -f $destino
+
+      - name: Esperar a que todos los pods esten listos
+        run: |
+          .\scripts\cd\ayudas.ps1
+          foreach ($d in "postgres", "servicio-autenticacion", "servicio-clientes-productos", "servicio-pagos-domicilios", "servicio-pedidos", "servicio-inventario", "gateway") {
+            k rollout status "deployment/$d" -n $env:NAMESPACE --timeout=300s
+          }
+          k get pods -n $env:NAMESPACE -o wide
+          k get svc -n $env:NAMESPACE
+
+      - name: Prueba de humo (el gateway responde)
+        run: |
+          $ok = $false
+          for ($i = 1; $i -le 12; $i++) {
+            try {
+              $r = Invoke-RestMethod -Uri $env:SMOKE_URL -TimeoutSec 5
+              if ($r.mensaje) { $ok = $true; break }
+            } catch {
+              Start-Sleep -Seconds 5
+            }
+          }
+          if (-not $ok) { throw "El gateway no respondio en $env:SMOKE_URL" }
+          Write-Host "Respuesta del gateway: $($r.mensaje)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "### Despliegue correcto`nGateway: $env:SMOKE_URL`nCommit: $env:SHA"
+
+      - name: Diagnostico si algo fallo
+        if: failure()
+        run: |
+          kubectl get pods -n $env:NAMESPACE
+          kubectl get events -n $env:NAMESPACE --sort-by=.lastTimestamp
