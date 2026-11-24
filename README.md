@@ -56,3 +56,45 @@ Ver `frontend/README.md`. Con Kubernetes: `GATEWAY_URL=http://localhost:30000 np
 
 ## Equipo
 (Agregar nombres y usuarios de GitHub de cada integrante)
+
+## Integración continua y despliegue (CI/CD)
+
+El proyecto utiliza **GitHub Actions** para automatizar la validación del código y la construcción de las imágenes Docker. El flujo está definido en `.github/workflows/ci.yml`.
+
+### ¿Cuándo se ejecuta?
+
+El flujo se ejecuta cuando:
+
+- Se realiza un `push` a la rama `main`.
+- Se crea o actualiza un `pull request` dirigido a `main`.
+- Se inicia manualmente desde GitHub Actions.
+
+### Etapas del flujo
+
+1. **Pruebas automatizadas:** ejecuta las pruebas de los microservicios `gateway`, `servicio_autenticacion`, `servicio_clientes_productos`, `servicio_pagos_domicilios`, `servicio_pedidos` y `servicio_inventario`. Las pruebas se ejecutan en paralelo con Python 3.11 y pytest. Los resultados se guardan como artefactos XML.
+2. **Compilación del frontend:** instala las dependencias con `npm ci` y compila la aplicación React con `npm run build`.
+3. **Validación de Kubernetes:** ejecuta `scripts/validar_k8s.py` para revisar los manifiestos de Kubernetes.
+4. **Construcción y publicación de imágenes:** cuando las etapas anteriores finalizan correctamente, construye las seis imágenes Docker y las publica en GitHub Container Registry (GHCR). Esta etapa no se ejecuta en los `pull requests`.
+
+Las imágenes se publican con dos etiquetas: el identificador del commit y `latest`.
+
+### Ejecutar pruebas localmente
+
+Para ejecutar las pruebas de cada microservicio, utiliza los siguientes comandos desde la raíz del proyecto:
+
+```powershell
+py -m pytest servicio_pagos_domicilios\tests -v
+py -m pytest servicio_pedidos\tests -v
+py -m pytest servicio_inventario\tests -v
+```
+
+### Resultados de las pruebas
+
+| Microservicio | Pruebas aprobadas |
+|---|---:|
+| Pagos y domicilios | 11 |
+| Pedidos | 15 |
+| Inventario | 22 |
+| **Total** | **48** |
+
+Las 48 pruebas ejecutadas finalizaron correctamente, sin fallos.
