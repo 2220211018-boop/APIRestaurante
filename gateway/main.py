@@ -29,7 +29,7 @@ CABECERAS_IGNORADAS = {
 @app.get("/")
 async def inicio():
     return {
-        "mensaje": "API Gateway del restaurante funcionando",
+        "mensaje": "API Gateway del restaurante funcionando bien",
         "servicios": list(SERVICIOS),
     }
 
